@@ -1,13 +1,19 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
+	"github.com/ionutcarp/learn-http-servers/internal/database"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 	"log"
 	"net/http"
+	"os"
 	"sync/atomic"
 )
 
 type apiConfig struct {
+	db             *database.Queries
 	fileserverHits atomic.Int32
 }
 
@@ -15,9 +21,33 @@ func main() {
 	const filepathRoot = "."
 	const port = 8080
 
+	err := godotenv.Load()
+	if err != nil {
+		return
+	}
+	dbURL := os.Getenv("DB_URL")
+	if dbURL == "" {
+		log.Fatal("DB_URL environment variable not set")
+	}
+
+	dbConn, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatalf("error connecting to database: %v", err)
+	}
+	defer func(db *sql.DB) {
+		err := db.Close()
+		if err != nil {
+			log.Fatalf("error closing db connection: %v", err)
+		}
+	}(dbConn)
+
+	dbQueries := database.New(dbConn)
+
 	apiCfg := apiConfig{
+		db:             dbQueries,
 		fileserverHits: atomic.Int32{},
 	}
+
 	mux := http.NewServeMux()
 	fsHandler := apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir(filepathRoot))))
 	mux.Handle("/app/", fsHandler)
@@ -31,35 +61,6 @@ func main() {
 		Handler: mux,
 	}
 
-	log.Printf("Serving files from %s on port: %s\n", filepathRoot, port)
+	log.Printf("Serving files from %s on port: %d\n", filepathRoot, port)
 	log.Fatal(srv.ListenAndServe())
-}
-
-func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cfg.fileserverHits.Add(1)
-		next.ServeHTTP(w, r)
-	})
-}
-
-func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
-	/*	if r.Method != "GET" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}*/
-	w.Header().Add("Content-Type", "text/html")
-	w.WriteHeader(http.StatusOK)
-	_, err := w.Write([]byte(fmt.Sprintf(`
-<html>
-
-<body>
-	<h1>Welcome, Chirpy Admin</h1>
-	<p>Chirpy has been visited %d times!</p>
-</body>
-
-</html>
-	`, cfg.fileserverHits.Load())))
-	if err != nil {
-		return
-	}
 }
